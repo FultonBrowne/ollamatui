@@ -7,7 +7,7 @@ use crossterm::{
 use futures_util::stream::StreamExt;
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Position},
     text::Text,
     widgets::{Block, Borders, Paragraph, Wrap},
     Terminal,
@@ -15,6 +15,7 @@ use ratatui::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::env;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::{io, time::Duration};
@@ -32,10 +33,6 @@ struct ChatHistory {
 }
 
 impl ChatHistory {
-    fn add_message(&mut self, message: Message) {
-        self.messages.push(message);
-    }
-
     fn clone(&self) -> ChatHistory {
         ChatHistory {
             messages: self
@@ -52,11 +49,16 @@ impl ChatHistory {
 
 const API_URL: &str = "http://localhost:11434/api/chat";
 
-async fn send_message(client: &Client, chat_history: &ChatHistory, tx: Sender<String>) {
+async fn send_message(
+    client: &Client,
+    chat_history: &ChatHistory,
+    model: &str,
+    tx: Sender<String>,
+) {
     let response = client
         .post(API_URL)
         .json(&serde_json::json!({
-            "model": "llama3.2",
+            "model": model,
             "messages": chat_history.messages,
             "stream": true // Enable streaming
         }))
@@ -81,6 +83,10 @@ async fn send_message(client: &Client, chat_history: &ChatHistory, tx: Sender<St
 }
 
 fn main() -> Result<(), io::Error> {
+    // Read command-line arguments
+    let args: Vec<String> = env::args().collect();
+    let model = if args.len() > 1 { &args[1] } else { "llama3.2" };
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableBlinking)?;
@@ -91,7 +97,6 @@ fn main() -> Result<(), io::Error> {
     let mut scroll_offset = 0;
 
     let client = Client::new();
-    let runtime = Runtime::new().unwrap();
 
     let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
 
@@ -100,7 +105,7 @@ fn main() -> Result<(), io::Error> {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(80), Constraint::Percentage(20)].as_ref())
-                .split(f.size());
+                .split(f.area());
 
             let history_text = chat_history
                 .messages
@@ -128,7 +133,10 @@ fn main() -> Result<(), io::Error> {
             let input_area = chunks[1];
             let cursor_x = input_area.x + input.len() as u16 + 1;
             let cursor_y = input_area.y + 1;
-            f.set_cursor(cursor_x, cursor_y);
+            f.set_cursor_position(Position {
+                x: cursor_x,
+                y: cursor_y,
+            });
         })?;
 
         // Check for streaming updates
@@ -159,12 +167,14 @@ fn main() -> Result<(), io::Error> {
                         let client_clone = client.clone();
                         let chat_history_clone = chat_history.clone();
                         let tx_clone = tx.clone();
+                        let model_clone = model.to_string();
 
                         thread::spawn(move || {
                             let runtime = Runtime::new().unwrap();
                             runtime.block_on(send_message(
                                 &client_clone,
                                 &chat_history_clone,
+                                &model_clone,
                                 tx_clone,
                             ));
                         });
